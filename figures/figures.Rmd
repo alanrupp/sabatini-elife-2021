@@ -1,0 +1,33 @@
+---
+title: "Figures"
+author: "Alan Rupp"
+date: "`r format(Sys.time(), '%b %d, %Y')`"
+output: pdf_document
+geometry: margin=0.5in
+---
+
+Generating figure 3e from the manuscript.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      fig.align = "center")
+library(tidyverse)
+```
+
+```{r}
+load("../data/CLAMS/clams.Rdata")
+```
+
+```{r, fig.width = 7.5, fig.height = 5.5}
+# combining all parameters into a final figure
+fig <- cowplot::plot_grid(plotlist = list(
+  panel_plot("VO2", left_ylabel = "mL/kg/hr", title = expression("VO"[2])),
+  panel_plot("VCO2", left_ylabel = "mL/kg/hr", title = expression("VCO"[2])),
+  panel_plot("Ambulatory", left_ylabel = "Counts/hr", bar_daily = TRUE),
+  panel_plot("EE", left_ylabel = "kcal/hr", title = "Energy Expenditure"),
+  panel_plot("Food Intake", left_ylabel = "grams", bar_daily = TRUE),
+  panel_plot("RER", left_ylabel = expression("VCO"[2]*"/VO"[2]))
+), ncol = 2, label_fontface = "bold", vjust = 1)
+
+ggsave("Figure3e-j.pdf", fig, width = 7.5, height = 5.5, units = "in", dpi = 600)
+```

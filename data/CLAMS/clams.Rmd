@@ -1,0 +1,391 @@
+---
+title: "VMH LepRb-Vglut2 hM3Dq CLAMS"
+author: "Alan Rupp"
+date: "`r strftime(Sys.time(), '%b %d, %Y')`"
+output: pdf_document
+geometry: margin=0.5in
+---
+
+Plotting and analyzing CLAMS data from the Core for Vglut2-Flp;Lepr-Cre mice that Paul injected with his Flp+Cre hM3Dq virus.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+options(bitmapType = "cairo")
+library(tidyverse)
+library(readxl)
+library(lme4); library(emmeans)
+library(knitr); library(kableExtra)
+library(lubridate)
+```
+
+
+```{r read}
+fname <- "2019-09-15 Myers-Paul 9 mice 5 day run CLAMS mt.xlsm"
+sheets <- excel_sheets(fname)
+
+read_data <- function(sheet_name) {
+  df <- read_xlsx(fname, sheet = sheet_name, skip = 59)
+  df <- filter(df, !Computer %in% c("Date/Clock", "Time"))
+  df <- select(df, -starts_with(".."), -`Hourly Average`)
+  df <- select(df, -`797`) # 797 is an injection miss
+  df <- rename(df, "Date" = Computer, "Time" = `ID#:`)
+  df <- mutate(df, Date = as.Date(as.numeric(Date), 
+                                  origin = "1900-01-01") - 2)
+  df <- mutate(df, Time = as.numeric(Time))
+  df <- mutate(df, Time = ifelse(Time >= 1, Time - as.integer(Time), Time))
+  df <- gather(df, -Date, -Time, key = "Mouse", value = "value")
+  df <- mutate(df, "treatment" = ifelse(Date <= as.Date("2019-09-17"),
+                                        "Saline", "CNO"))
+  df <- mutate(df, treatment = factor(treatment, levels = c("Saline", "CNO")))
+  df <- mutate(df, "tod" = ifelse(Time > 0.25 & Time <= 0.75, "Day", "Night"))
+}
+
+to_read <- c("VO2" = "VO2-mouse ", "VCO2" = "VCO2-mouse", "RER" = "RER",
+             "EE" = "EE-mouse", "Activity-X" = "Activity-X total",
+             "Activity-Z" = "Activity-Z total",
+             "Ambulatory" = "Activity-X Ambulatory",
+             "Fat Oxidation" = "Fat Oxidation-LBM",
+             "Glucose Oxidation" = "Glucose Oxidation-LBM",
+             "Food Intake" = "Food Intake")
+
+df <- map(to_read, read_data)
+names(df) <- names(to_read)
+```
+
+```{r summarize-data}
+summarize_data <- function(parameter) {
+  df <- df[[parameter]] %>%
+    filter(Date != as.Date("2019-09-15") & Date != as.Date("2019-09-20")) %>%
+    group_by(Time, Mouse, treatment) %>%
+    summarize(value = mean(value, na.rm = TRUE)) %>%
+    group_by(Time, treatment) %>%
+    summarize(avg = mean(value, na.rm = TRUE), 
+              sem = sd(value, na.rm = TRUE) / sqrt(n()))
+  return(df)
+}
+```
+
+## Overview
+There are `r length(unique(df[["EE"]]$Mouse))` mice that were subjected to the regimen of 2 days of 2 saline injections, followed by 2 days of 2 CNO injections. 
+
+```{r}
+df[["EE"]] %>% group_by(Mouse, treatment, Date) %>% 
+  count() %>%
+  filter(n > 70) %>%
+  select(-n) %>%
+  spread(key = "Date", value = "treatment") %>%
+  kable(caption = "Experiment full days") %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+Injections were performed at 9:30am and 4:30pm.
+
+\pagebreak
+
+## Averaged data
+The full data, averaged across both days of treatment showing the mean and standard error. Dotted lines correspond to the injection times and the shaded gray corresponds to the light cycle.
+
+```{r plot-continuous, fig.width = 7.5, fig.height = 9}
+plot_continuous <- function(parameter, ylabel = NULL, no_title = FALSE,
+                            legend = "right") {
+  # get mean and error
+  df <- summarize_data(parameter)
+  # plot settings
+  colors <- c("gray", "red3")
+  legend_title <- expression(underline("Treatment"))
+  # plot
+  p <- ggplot(df, aes(x = Time, y = avg, color = treatment)) +
+    annotate("rect", xmin = 0, xmax = 0.25, 
+             ymin = min(df$avg - df$sem), ymax = max(df$avg + df$sem), 
+             alpha = 0.3, fill = "gray") +
+    annotate("rect", xmin = 0.75, xmax = 1, 
+             ymin = min(df$avg - df$sem), ymax = max(df$avg + df$sem), 
+             alpha = 0.3, fill = "gray") +
+    geom_line() +
+    geom_ribbon(aes(ymin = avg - sem, ymax = avg + sem, fill = treatment),
+                alpha = 0.3, color = 0) +
+    scale_color_manual(values = colors, name = legend_title) +
+    scale_fill_manual(values = colors, name = legend_title) +
+    geom_vline(aes(xintercept = 9.5/24), linetype = "dashed") +
+    geom_vline(aes(xintercept = 16.5/24), linetype = "dashed") +
+    theme_classic() +
+    ggtitle(parameter) +
+    ylab(NULL) + xlab("Time of day") +
+    scale_x_continuous(expand = c(0, 0), limits = c(0, 1),
+                       breaks = seq(0, 1, by = 0.25),
+                       labels = c("00:00", "6:00", "12:00", "18:00","24:00")) +
+      scale_y_continuous(expand = c(0, 0)) +
+    theme(plot.title = element_text(hjust = 0.5),
+          axis.text = element_text(color = "black"),
+          legend.position = legend)
+  if (!is.null(ylabel)) p <- p + ylab(ylabel) 
+  if (no_title) p <- p + theme(plot.title = element_blank())
+  return(p)
+}
+
+cowplot::plot_grid(plotlist = map(names(df), plot_continuous), ncol = 2)
+```
+
+\pagebreak
+
+## Paired summary
+This is the data averaged by treatment with pairing because each mouse was given each treatment (Saline and CNO).
+
+```{r plot-paired, fig.width = 7.5, fig.height = 9}
+plot_paired <- function(parameter, daily = FALSE,
+                        no_title = FALSE, no_ticks = FALSE,
+                        no_text = FALSE, ylabel = NULL) {
+  df <- df[[parameter]] %>%
+    filter(Date != as.Date("2019-09-15") & Date != as.Date("2019-09-20"))
+  if (daily) {
+    df <- df %>% group_by(Mouse, treatment, day(Date)) %>%
+      summarize(value = sum(value, na.rm = TRUE)) %>%
+      group_by(Mouse, treatment) %>%
+      summarize(value = mean(value))
+  } else {
+    df <- df %>% group_by(Mouse, treatment) %>%
+      summarize(value = mean(value, na.rm = TRUE))
+  }
+  # group averages
+  group_df <- df %>%
+    group_by(treatment) %>%
+    summarize(avg = mean(value, na.rm = TRUE),
+              sem = sd(value, na.rm = TRUE) / sqrt(n()))
+  # plot
+  p <- ggplot(df, aes(x = treatment, y = value)) +
+    geom_col(data = group_df, aes(y = avg, fill = treatment), 
+             color = "black", position = "dodge") +
+    geom_errorbar(data = group_df, 
+                  aes(x = treatment, ymin = avg - sem, ymax = avg + sem), 
+                  width = 0.4, inherit.aes = FALSE, 
+                  position = position_dodge(width = 0.9)) +
+    geom_line(aes(group = Mouse)) +
+    geom_point() +
+    scale_fill_manual(values = c("gray", "red3"),
+                      name = expression(underline("Treatment"))) +
+    theme_classic() +
+    ylab(NULL) + xlab(NULL) +
+    scale_y_continuous(expand = c(0, 0)) +
+    ggtitle(parameter) +
+    theme(legend.position = "none",
+          axis.text = element_text(color = "black"),
+          axis.text.x = element_text(size = 10),
+          strip.background = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          legend.background = element_blank())
+  # get stats (paired t-test)
+  result <- t.test(df[df$treatment == "CNO", ]$value,
+                   df[df$treatment == "Saline", ]$value,
+                   paired = TRUE)$p.value
+  # set ymin and ymax values
+  ymax <- max(df$value, na.rm = TRUE)*1.05
+  if (parameter %in% c("VO2", "VCO2", "RER", "EE")) {
+    ymin <- min(df$value, na.rm = TRUE) * 0.95
+  } else {
+    ymin <- 0
+  }
+  # add stars to plot
+  if (result < 0.05) {
+    # different y values based on whether there is a y-axis that goes to 0
+    results <- data.frame(x1 = 1, x2 = 2, xstr = 1.5)
+    if (parameter %in% c("VO2", "VCO2", "RER", "EE")) {
+      results <- results %>% mutate(
+        "ybar" = (max(df$value)*1.05-min(df$value)*0.95)*0.05 + max(df$value),
+        "ystr" = (max(df$value)*1.05-min(df$value)*0.95)*0.08 + max(df$value)
+      )
+    } else {
+      results <- results %>% mutate(
+        "ybar" = max(df$value)*1.05, "ystr" = max(df$value)*1.08
+        )
+    }
+    results$stars <- ifelse(result < 0.001, "***",
+                            ifelse(result < 0.01, "**",
+                                   ifelse(result < 0.05, "*", NA)))
+    # add stars and line to the plot
+    p <- p + 
+      geom_segment(data = results, 
+                   aes(x = x1, xend = x2, y = ybar, yend = ybar)) +
+      geom_text(data = results, aes(x = xstr, y = ystr, label = stars))
+    # set new ymax to accomodate stars
+    ymax <- ifelse(ymax < max(results$ystr)*1.05,
+                   max(results$ystr)*1.05,
+                   ymax)
+  }
+  # set limits
+  p <- p + coord_cartesian(ylim = c(ymin, ymax))
+  # remove elements for simple design
+  if (no_title) p <- p + theme(plot.title = element_blank())
+  if (no_ticks) p <- p + theme(axis.ticks.x = element_blank())
+  if (no_text) p <- p + theme(axis.text.x = element_blank())
+  # return plot
+  return(p)
+}
+  
+cowplot::plot_grid(plotlist = map(names(df), plot_paired), ncol = 3)
+```
+
+\pagebreak
+
+## Paired summary - time of day
+Same as previous, but now breaking out by time-of-day (Day v. Night).
+
+```{r plot-paired-tod, fig.width = 7.5, fig.height = 9}
+plot_paired_tod <- function(parameter, daily = FALSE, 
+                            no_title = FALSE, no_ticks = FALSE,
+                            no_text = FALSE) {
+  df <- df[[parameter]] %>%
+    filter(Date != as.Date("2019-09-15") & Date != as.Date("2019-09-20"))
+  if (daily) {
+    df <- df %>% group_by(Mouse, treatment, day(Date), tod) %>%
+      summarize(value = sum(value, na.rm = TRUE)) %>%
+      group_by(Mouse, treatment, tod) %>%
+      summarize(value = mean(value))
+  } else {
+    df <- df %>% group_by(Mouse, treatment, tod) %>%
+      summarize(value = mean(value, na.rm = TRUE))
+  }
+  # average by group for column and errorbar
+  group_df <- df %>% group_by(treatment, tod) %>%
+    summarize(avg = mean(value, na.rm = TRUE),
+              sem = sd(value, na.rm = TRUE) / sqrt(n()))
+  # get stats (using a linear mixed model this time)
+  model <- lmer(value ~ treatment * tod + (1|Mouse), data = df)
+  results <- pairs(emmeans(model, ~ treatment | tod))
+  results <- as.data.frame(results)
+  # plot
+  p <- ggplot(df, aes(x = treatment, y = value)) +
+    geom_col(data = group_df, aes(y = avg, fill = treatment), 
+             color = "black", position = "dodge") +
+    geom_errorbar(data = group_df, 
+                  aes(x = treatment, ymin = avg - sem, ymax = avg + sem), 
+                  width = 0.4, inherit.aes = FALSE, 
+                  position = position_dodge(width = 0.9)) +
+    geom_line(aes(group = Mouse)) +
+    geom_point() +
+    scale_fill_manual(values = c("gray", "red3"),
+                      name = expression(underline("Treatment"))) +
+    theme_classic() +
+    ylab(NULL) + xlab(NULL) +
+    scale_y_continuous(expand = c(0, 0)) +
+    ggtitle(parameter) +
+    theme(legend.position = "none",
+          axis.text = element_text(color = "black"),
+          strip.background = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          legend.background = element_blank(),
+          strip.placement = "outside") +
+    facet_wrap(~tod, strip.position = "bottom")
+  # set ymin and ymax values
+  ymax <- max(df$value, na.rm = TRUE)*1.05
+  if (parameter %in% c("VO2", "VCO2", "RER", "EE")) {
+    ymin <- min(df$value, na.rm = TRUE) * 0.95
+  } else {
+    ymin <- 0
+  }
+  # add stars to plot
+  if (any(results$p.value < 0.05)) {
+    results <- filter(results, p.value < 0.05)
+    results <- inner_join(results, df, by = "tod")
+    # different y values based on whether there is a y-axis that goes to 0
+    if (parameter %in% c("VO2", "VCO2", "RER", "EE")) {
+      results <- results %>% group_by(tod, p.value) %>% 
+        summarize("ybar" = (max(value)*1.05-min(value)*0.95)*0.1 + max(value),
+                  "ystr" = (max(value)*1.05-min(value)*0.95)*0.12 +
+                    max(value))
+    } else {
+      results <- results %>% group_by(tod, p.value) %>% 
+        summarize("ybar" = (max(value)*1.05)*0.1 + max(value),
+                  "ystr" = (max(value)*1.05)*0.12 + max(value))
+    }
+    # turn p value into stars
+    results <- results %>% mutate(
+      "stars" = ifelse(p.value < 0.001, "***",
+                               ifelse(p.value < 0.01, "**",
+                                      ifelse(p.value < 0.05, "*", NA)))
+    )
+    # add mapping info to the data.frame
+    p <- p + 
+      geom_segment(data = results, 
+                   aes(x = 1, y = ybar, xend = 2, yend = ybar)) +
+      geom_text(data = results, aes(x = 1.5, y = ystr, label = stars),
+                inherit.aes = FALSE)
+    # set new ymax to accomodate stars
+    ymax <- ifelse(ymax < max(results$ystr)*1.05, 
+                   max(results$ystr)*1.05, 
+                   ymax)
+  }
+  # set limits
+  p <- p + coord_cartesian(ylim = c(ymin, ymax))
+  # arguments for minimal design
+  if (no_title) p <- p + theme(plot.title = element_blank())
+  if (no_ticks) p <- p + theme(axis.ticks.x = element_blank())
+  if (no_text) p <- p + theme(axis.text.x = element_blank())
+  return(p)
+}
+  
+cowplot::plot_grid(plotlist = map(names(df), plot_paired_tod), ncol = 3)
+```
+
+\pagebreak
+
+# Figure
+Prepping a figure for the manuscript based on these plots.
+
+```{r}
+# this puts the 3 different data plots together
+figure_plot <- function(parameter, ylabel = NULL, daily = FALSE) {
+  cowplot::plot_grid(plotlist = list(
+    plot_continuous(parameter, legend = "none", no_title = TRUE,
+                    ylabel = ylabel) +
+      theme(axis.text = element_text(size = 8),
+            axis.title.x = element_text(size = 10)),
+    plot_paired(parameter, daily = daily, no_text = TRUE, no_title = TRUE,
+                no_ticks = TRUE) +
+      theme(axis.text.y = element_text(size = 8),
+            plot.margin = margin(t = 0.1, b = 0.37, unit = "in")),
+    plot_paired_tod(parameter, daily = daily, no_text = TRUE, no_title = TRUE,
+                    no_ticks = TRUE) +
+      theme(axis.text.y = element_text(size = 8))
+  ), rel_widths = c(0.5, 0.2, 0.3), ncol = 3)
+}
+```
+
+```{r}
+# this adds a title and line to the data plots
+panel_plot <- function(parameter, left_ylabel = NULL, title = NULL,
+                       bar_daily = FALSE) {
+  if (is.null(title)) title <- parameter
+  cowplot::plot_grid(plotlist = list(
+    ggplot() +
+      annotate("text", x = 1, y = 1, label = title, hjust = 0.5, vjust = 1) +
+      annotate("segment", x = 0, xend = 2, y = 0.5, yend = 0.5) +
+      theme_void(),
+    figure_plot(parameter, ylabel = left_ylabel, daily = bar_daily)
+    ), ncol = 1, rel_heights = c(0.1, 0.9))
+}
+```
+
+```{r, fig.width = 7.5, fig.height = 5.5}
+# combining all parameters into a final figure
+cowplot::plot_grid(plotlist = list(
+  panel_plot("VO2", left_ylabel = "mL/kg/hr", title = expression("VO"[2])),
+  panel_plot("VCO2", left_ylabel = "mL/kg/hr", title = expression("VCO"[2])),
+  panel_plot("Ambulatory", left_ylabel = "Counts/hr", bar_daily = TRUE),
+  panel_plot("EE", left_ylabel = "kcal/hr", title = "Energy Expenditure"),
+  panel_plot("Food Intake", left_ylabel = "grams", bar_daily = TRUE),
+  panel_plot("RER", left_ylabel = expression("VCO"[2]*"/VO"[2]))
+), ncol = 2, labels = letters[6:11], label_fontface = "bold", vjust = 1)
+```
+
+\pagebreak
+
+# Files
+Saving workspace image as `clams.Rdata`.
+```{r}
+save.image("clams.Rdata")
+```
+
+# Session info
+```{r}
+sessionInfo()
+```

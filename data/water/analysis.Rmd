@@ -1,0 +1,192 @@
+---
+title: "hM3Dq CNO water bottles"
+author: "Alan Rupp"
+date: "`r format(Sys.time(), '%b %d, %Y')`"
+geometry: margin=0.5in
+output: pdf_document
+---
+
+Paul injected VgatFlp;LepRbCre mice with a Flp+Cre dependent AAV expressing hM3Dq in the ventromedial hypothalamus (VMH). He then singly housed the mice and measured blood glucose, body weight, food intake, and water intake daily. After 3 days, he switched the water to a water containing CNO and continued measuring the same parameters. Also, some mice were on high-fat diet (HFD) and some were on chow (CHW). He also included a separate cohort (`Control`) that were not injected and were kept on chow, but got the same regimen of water bottles.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+library(knitr); library(kableExtra)
+library(tidyverse)
+library(readxl)
+library(lme4); library(emmeans)
+```
+
+```{r read}
+file <- "watr botles.xlsx"
+sheets <- excel_sheets(file)
+df <- map(sheets, ~ read_xlsx(file, .x, range = "B1:AG9"))
+names(df) <- sheets
+rm(sheets)
+```
+
+Paul sent me the raw data file (`r file`). He said:
+
+>control water: day 0-> day 1 & day 1-> day2
+CNO water : day 2->3, day 3->4, day 4->5
+control water: day5->6 and day 6-> day 7
+
+>we had to change the CNO water with fresh stuff each day. so water mass 1 corresponded to the previous 24 hours, while water mass 2 was for the proceeding 24 hours
+
+I'm going to use lme4 `r packageVersion("lme4")` to run linear mixed models of measurements to look for effects of CNO. For all upcoming plots, the black lines with gray shading is the modeled data and the red line is the daily average for the raw data.
+
+```{r reshape}
+# extend column names from group label
+col_names <- colnames(df$BW)
+for (i in col_names) {
+  if (str_detect(i, "^[E,C]")) {
+    new_name <- i
+  } else{
+    col_names[col_names == i] <- new_name
+  }
+}
+df <- map(df, ~ set_names(.x, col_names))
+rm(col_names, i, new_name)
+
+# put all data in tidy format
+reshape <- function(df) {
+  df <- df[, apply(df, 2, function(x) !all(is.na(x)))]
+  df <- df[apply(df, 1, function(x) !all(is.na(x))), ]
+  df[1, ] <- as.list(rep(100, ncol(df)))
+  df$Day <- seq(ifelse(nrow(df) == 8, 0, 1), 7)
+  df <- pivot_longer(df, -Day, names_to = "Group")
+  df <- separate(df, Group, into = c("Group", "Treatment"), sep = "\\-")
+  df <- df %>% mutate(
+    Group = factor(Group, levels = c("Controls", "Exp")),
+    Treatment = factor(Treatment, levels = c("VEH", "CNO"))
+  )
+  df$Liquid <- ifelse(df$Day %in% c(3, 4, 5) & df$Treatment == "CNO", 
+                      "CNO", "Water")
+  df$Liquid <- factor(df$Liquid, levels = c("Water", "CNO"))
+  df <- filter(df, !is.na(value))
+  df <- df %>% group_by(Day, Group, Treatment) %>%
+    mutate("Mouse" = paste(Group, Treatment, seq(n())))
+  return(df)
+}
+df <- map(df, reshape)
+```
+
+```{r}
+df$BW %>%
+  group_by(Group, Treatment, Day) %>%
+  count() %>%
+  pivot_wider(names_from = "Day", values_from = "n") %>%
+  kable(caption = "Sample breakdown") %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+\pagebreak
+
+```{r}
+plot_values <- function(parameter) {
+  ggplot(df[[parameter]], aes(x = Day, y = value)) +
+  geom_hline(aes(yintercept = 100), linetype = "dashed") +
+  geom_line(aes(group = Mouse), color = "#f5ba98") +
+  geom_line(data = df[[parameter]] %>% group_by(Group, Treatment, Day) %>%
+              summarize("value" = mean(value)),
+            color = "#70284a") +
+  geom_point(data = df[[parameter]] %>% group_by(Group, Treatment, Day) %>%
+              summarize("value" = mean(value)),
+            color = "#70284a") +
+  facet_wrap(~Group + Treatment, ncol = 4) +
+  scale_y_continuous() +
+  theme_classic() +
+  ylab(paste(parameter, "(%)")) +
+  xlab("Day") +
+  scale_x_continuous(limits = c(0, 7), breaks = seq(0, 7)) +
+  theme(strip.background = element_blank(),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7),
+        strip.text = element_text(size = 8))
+}
+```
+
+# Body weight
+```{r, fig.width = 7.5, fig.height = 2}
+plot_values("BW")
+```
+
+## Model
+```{r, echo = TRUE}
+model <- aov(value ~ Treatment * Group * factor(Day), df$BW)
+```
+
+Comparing across regiments (`Controls-CNO v. Controls-VEH` and `Exp-cNO v. Exp-VMH`) for all days of treatment.
+
+```{r}
+pairs(emmeans(model, ~ Treatment | Day + Group)) %>%
+  as.data.frame() %>%
+  mutate("stars" = ifelse(p.value < 0.001, "***",
+                          ifelse(p.value < 0.01, "**", 
+                                 ifelse(p.value < 0.05, "*", "")))) %>%
+  select(contrast, Day, Group, estimate, p.value, stars) %>%
+  mutate(estimate = round(estimate, 2),
+         p.value = format(p.value, scientific = TRUE, digits = 2)) %>%
+  kable(caption = "Body weight results") %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+\pagebreak
+
+# Food intake
+```{r, fig.width = 7.5, fig.height = 2}
+plot_values("FI")
+```
+
+## Model
+```{r, echo = TRUE}
+model <- aov(value ~ Treatment * Group * factor(Day), df$FI)
+```
+
+Comparing across regiments (`Controls-CNO v. Controls-VEH` and `Exp-cNO v. Exp-VMH`) for all days of treatment.
+
+```{r}
+pairs(emmeans(model, ~ Treatment | Day + Group)) %>%
+  as.data.frame() %>%
+  mutate("stars" = ifelse(p.value < 0.001, "***",
+                          ifelse(p.value < 0.01, "**", 
+                                 ifelse(p.value < 0.05, "*", "")))) %>%
+  select(contrast, Day, Group, estimate, p.value, stars) %>%
+  mutate(estimate = round(estimate, 2),
+         p.value = format(p.value, scientific = TRUE, digits = 2)) %>%
+  kable(caption = "Food intake results") %>%
+  kable_styling(latex_options = "hold_position")
+```
+\pagebreak
+
+# Water intake
+```{r, fig.width = 7.5, fig.height = 2}
+plot_values("WI")
+```
+
+## Model
+```{r, echo = TRUE}
+model <- aov(value ~ Treatment * Group * factor(Day), df$WI)
+```
+
+Comparing across regiments (`Controls-CNO v. Controls-VEH` and `Exp-cNO v. Exp-VMH`) for all days of treatment.
+
+```{r}
+pairs(emmeans(model, ~ Treatment | Day + Group)) %>%
+  as.data.frame() %>%
+  mutate("stars" = ifelse(p.value < 0.001, "***",
+                          ifelse(p.value < 0.01, "**", 
+                                 ifelse(p.value < 0.05, "*", "")))) %>%
+  select(contrast, Day, Group, estimate, p.value, stars) %>%
+  mutate(estimate = round(estimate, 2),
+         p.value = format(p.value, scientific = TRUE, digits = 2)) %>%
+  kable(caption = "Water intake results") %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+\pagebreak
+
+# Session info
+```{r}
+sessionInfo()
+```
